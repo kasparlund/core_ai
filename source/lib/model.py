@@ -3,6 +3,7 @@ from torch import *
 from torch import nn
 from torch import tensor
 from torch.nn import init
+import torch.nn.functional as F
 import torch as torch
 from functools import partial
 import math
@@ -52,6 +53,7 @@ def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
 
+"""
 def conv2d(ni, nf, ks=3, stride=2):
     "creates a layer with nn.Conv2d followed by af nn.ReLU"
     #ni: number of input filters
@@ -67,6 +69,7 @@ def get_cnn_layers_ch1(n_filters_pr_layer, n_out_features):
     layers.extend( [nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(n_filters_pr_layer[-1], n_out_features)] )
     return layers
 
+
 def get_cnn_model_ch1(n_filters_pr_layer, n_out_features): 
     return nn.Sequential( *get_cnn_layers_ch1(n_filters_pr_layer, n_out_features ) )
 
@@ -80,3 +83,51 @@ def init_cnn(m, uniform=False):
     f = init.kaiming_uniform_ if uniform else init.kaiming_normal_
     init_cnn_(m, f)
     return m
+"""
+def children(m  ): return list(m.children())
+
+class GeneralRelu(nn.Module):
+    def __init__(self, leak=None, sub=None, maxv=None):
+        super().__init__()
+        self.leak,self.sub,self.maxv = leak,sub,maxv
+
+    def forward(self, x):
+        x = F.leaky_relu(x,self.leak) if self.leak is not None else F.relu(x)
+        if self.sub is not None: x.sub_(self.sub)
+        if self.maxv is not None: x.clamp_max_(self.maxv)
+        return x
+
+def init_cnn_(m, f):
+    if isinstance(m, nn.Conv2d):
+        f(m.weight, a=0.1)
+        if getattr(m, 'bias', None) is not None: m.bias.data.zero_()
+    for l in m.children(): init_cnn_(l, f)
+
+def init_cnn(m, uniform=False):
+    f = init.kaiming_uniform_ if uniform else init.kaiming_normal_
+    init_cnn_(m, f)
+
+def get_cnn_layers(n_filters_pr_layer,  input_features, output_features, layer, **kwargs):
+    nfs = [input_features] + n_filters_pr_layer
+    return [layer(nfs[i], nfs[i+1], 5 if i==0 else 3, **kwargs)
+            for i in range(len(nfs)-1)] + [
+        nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(nfs[-1], output_features)]
+
+def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
+    return nn.Sequential(
+        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), GeneralRelu(**kwargs))
+
+def get_cnn_model(filters_pr_layer,  input_features,  output_features, layer, **kwargs):
+    return nn.Sequential(*get_cnn_layers(filters_pr_layer,  input_features, output_features, layer, **kwargs))
+
+#def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
+#    return nn.Sequential(
+#        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), GeneralRelu(**kwargs))
+
+def conv_layer(ni, nf, ks=3, stride=2, bn=True, **kwargs):
+    layers = [nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride, bias=not bn),
+              GeneralRelu(**kwargs)]
+    if bn: layers.append(nn.BatchNorm2d(nf, eps=1e-5, momentum=0.1))
+    return nn.Sequential(*layers)
+
+########################## Generalized ReLU ########################
