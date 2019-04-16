@@ -37,7 +37,6 @@ class Dataset():
     def __init__(self, x, y): self.x,self.y = x,y
     def __len__(self): return len(self.x)
     def __getitem__(self, i): return self.x[i],self.y[i]
-"""
 class DataBunch():
     def __init__(self, train_dl, valid_dl, c=None):
         self.train_dl,self.valid_dl,self.c = train_dl,valid_dl,c
@@ -58,6 +57,7 @@ class DataBunch():
 
     @property
     def valid_ds(self): return self.valid_dl.dataset
+"""
 
 
 def normalize(x, m, s): return (x-m)/s

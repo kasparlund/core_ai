@@ -53,37 +53,6 @@ def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
 
-"""
-def conv2d(ni, nf, ks=3, stride=2):
-    "creates a layer with nn.Conv2d followed by af nn.ReLU"
-    #ni: number of input filters
-    #nf: number of output filteres
-    #ks: kernel size
-    return nn.Sequential( nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), nn.ReLU() )
-
-def get_cnn_layers_ch1(n_filters_pr_layer, n_out_features):
-    #add the input layers with 1 filter pr pixel 
-    n_filters_pr_layer = [1] + n_filters_pr_layer
-    layers = [ conv2d(n_filters_pr_layer[i], n_filters_pr_layer[i+1], 5 if i==0 else 3)
-               for i in range(len(n_filters_pr_layer)-1) ]
-    layers.extend( [nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(n_filters_pr_layer[-1], n_out_features)] )
-    return layers
-
-
-def get_cnn_model_ch1(n_filters_pr_layer, n_out_features): 
-    return nn.Sequential( *get_cnn_layers_ch1(n_filters_pr_layer, n_out_features ) )
-
-def init_cnn_(m, f):
-    if isinstance(m, nn.Conv2d):
-        f(m.weight, a=0.1)
-        if getattr(m, 'bias', None) is not None: m.bias.data.zero_()
-    for l in m.children(): init_cnn_(l, f)
-
-def init_cnn(m, uniform=False):
-    f = init.kaiming_uniform_ if uniform else init.kaiming_normal_
-    init_cnn_(m, f)
-    return m
-"""
 def children(m  ): return list(m.children())
 
 class GeneralRelu(nn.Module):
@@ -113,18 +82,13 @@ def get_cnn_layers(n_filters_pr_layer,  input_features, output_features, layer, 
             for i in range(len(nfs)-1)] + [
         nn.AdaptiveAvgPool2d(1), Lambda(flatten), nn.Linear(nfs[-1], output_features)]
 
-def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
-    return nn.Sequential(
-        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), GeneralRelu(**kwargs))
-
 def get_cnn_model(filters_pr_layer,  input_features,  output_features, layer, **kwargs):
     return nn.Sequential(*get_cnn_layers(filters_pr_layer,  input_features, output_features, layer, **kwargs))
 
-#def conv_layer(ni, nf, ks=3, stride=2, **kwargs):
-#    return nn.Sequential(
-#        nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride), GeneralRelu(**kwargs))
-
 def conv_layer(ni, nf, ks=3, stride=2, bn=True, **kwargs):
+    #ni: number of input filters
+    #nf: number of output filteres
+    #ks: kernel size
     layers = [nn.Conv2d(ni, nf, ks, padding=ks//2, stride=stride, bias=not bn),
               GeneralRelu(**kwargs)]
     if bn: layers.append(nn.BatchNorm2d(nf, eps=1e-5, momentum=0.1))

@@ -74,60 +74,6 @@ class TrainEvalCallback(Callback):
     def begin_validate(self, e:Event): e.learn.model.eval()
       
  
-class LR_Finder(Callback):
-    def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10, beta = 0.98):
-        self.max_iter,self.min_lr,self.max_lr, self.best_loss = max_iter,min_lr,max_lr, 1e9
-        self.beta = beta
-
-    def begin_fit(self, e:Event):
-        self.n_iter = 0
-        self.avg_loss = -1
-        self.losses,self.smooth_losses  = [], []
-        self.lrs  = [[] for _ in e.learn.opt.param_groups]
-        
-    def begin_batch(self, e:Event):
-        if not e.learn.in_train: return
-        pos = self.n_iter/self.max_iter
-        lr  = self.min_lr * (self.max_lr/self.min_lr) ** pos
-        for pg in e.learn.opt.param_groups: pg['lr'] = lr
-        self.n_iter += 1 
-        
-    def after_batch(self, e:Event):
-        if e.learn.in_train:         
-            for pg,lr in zip(e.learn.opt.param_groups, self.lrs): lr.append(pg['lr'])
-            loss = e.learn.loss.detach().cpu()
-            self.losses.append(loss)
-            
-            if self.avg_loss <0 : self.avg_loss = loss
-            else:                 
-                self.avg_loss = self.avg_loss*self.beta + loss*(1-self.beta) 
-                self.avg_loss /= (1 - self.beta**self.n_iter)
-            self.smooth_losses.append( self.avg_loss )
-            
-            
-    def after_step(self, e:Event):
-        if not e.learn.in_train: return
-        if self.n_iter    >= self.max_iter or e.learn.smooth_loss > 4.0*self.best_loss: 
-            e.learn.stop = True
-        elif e.learn.loss <  self.best_loss:
-            self.best_loss = e.learn.loss
-            
-    def plot_lr  (self, pgid=-1): 
-        fig, ax = plt.subplots()
-        plt.plot(self.lrs[pgid], label='learning rate')        
-        ax.set(xlabel='iteration', ylabel='learning rate', title='learning rate finder')  
-        plt.legend(loc='upper left')
-        
-    def plot_loss(self, skip_start=0, skip_end=0 ):          
-        lrs = self.lrs[-1]
-        fig, ax = plt.subplots()
-        s = slice(skip_start,-skip_end) if skip_end>0 else slice(skip_start, None)
-        l1 = plt.plot(lrs[s], self.losses[s],        label='raw')
-        l2 = plt.plot(lrs[s], self.smooth_losses[s], 
-                      label=f"smoothed:{self.alpha}: avg_loss*a +(1-{self.alpha})*loss")
-        plt.xscale('log')
-        ax.set(xlabel='learning rate', ylabel='losses', title='learning rate finder')  
-        plt.legend(loc='lower left')
 
 
 def accuracy(out, yb): return (torch.argmax(out, dim=1)==yb).float().mean()
@@ -171,7 +117,57 @@ class AvgStatsCallback(Callback):
         print(self.train_stats)
         print(self.valid_stats)
         
+
+class LR_Finder(Callback):
+    def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10, beta = 0.8):
+        self.max_iter,self.min_lr,self.max_lr, self.best_loss = max_iter,min_lr,max_lr, 1e9
+        self.beta = beta
+
+    def begin_fit(self, e:Event):
+        self.n_iter = 0
+        self.mov_avg = -1
+        self.losses,self.smooth_losses  = [], []
+        self.lrs  = []
+        #self.lrs  = [[] for _ in e.learn.opt.param_groups]
         
+    def begin_batch(self, e:Event):
+        if not e.learn.in_train: return
+        pos = self.n_iter/self.max_iter
+        lr  = self.min_lr * (self.max_lr/self.min_lr) ** pos
+        for pg in e.learn.opt.hypers: 
+            pg['lr'] = lr
+            self.lrs.append(lr)
+            #print(f"LR_Finder.begin_batch: pg['lr']:{pg['lr']}")
+        self.n_iter += 1 
+        
+    def after_batch(self, e:Event):
+        if e.learn.in_train:         
+            loss         = e.learn.loss.item()
+            self.mov_avg = loss if self.mov_avg < 0 else self.mov_avg*self.beta + loss*(1-self.beta) 
+            self.losses.append(loss)
+            self.smooth_losses.append( self.mov_avg )            
+            
+    def after_step(self, e:Event):
+        if not e.learn.in_train: return
+        if self.n_iter >= self.max_iter or self.mov_avg > 4.0*self.best_loss:
+            e.learn.stop = True
+        if e.learn.loss <  self.best_loss: self.best_loss = e.learn.loss.item()
+            
+    def plot_lr  (self, pgid=-1): 
+        fig, ax = plt.subplots()
+        plt.plot(self.lrs, label='learning rate')        
+        ax.set(xlabel='iteration', ylabel='learning rate', title='learning rate finder')  
+        plt.legend(loc='upper left')
+        
+    def plot_loss(self, skip_start=0, skip_end=0 ):          
+        fig, ax = plt.subplots()
+        s  = slice(skip_start,-skip_end) if skip_end>0 else slice(skip_start, None)
+        l1 = plt.plot(self.lrs[s], self.losses[s], label='raw')
+        l2 = plt.plot(self.lrs[s], self.smooth_losses[s], 
+                      label=f"smoothed:{self.beta}: mov_avg*a +(1-{self.beta})*loss")
+        plt.xscale('log')
+        ax.set(xlabel='learning rate', ylabel='losses', title='learning rate finder')  
+        plt.legend(loc='lower left')        
 
 ###################################### Hooks ###################################### 
 from functools import partial
@@ -224,17 +220,19 @@ class HookCallback(Callback):
             self.losses.append(e.learn.loss.detach().cpu())
 
 
-def append_stats(hook, mod, inp, outp):
-    if not hasattr(hook,'stats'): hook.stats = ([],[],[])
-    means,stds,hists = hook.stats
-    means.append(outp.data.mean().cpu())
-    stds .append(outp.data.std().cpu())
-    hists.append(outp.data.cpu().histc(40,0,10)) #histc isn't implemented on the GPU
+def append_stats(hook, module, inp, outp):
+    if module.training:
+        if not hasattr(hook,'stats'): hook.stats = ([],[],[])
+        means,stds,hists = hook.stats
+        means.append(outp.data.mean().cpu())
+        stds .append(outp.data.std().cpu())
+        hists.append(outp.data.cpu().histc(40,0,10)) #histc isn't implemented on the GPU
 
 
 import numpy as np
 def get_hist(h): 
     return torch.stack(h.stats[2]).t().float().log1p()
+
 def get_min(h,pct_lower_bins):
     h1 = torch.stack(h.stats[2]).t().float()
     n_bins = h1.shape[0]
@@ -265,6 +263,7 @@ def plot_layer_stats( hooks:Hooks, pct_lower_bins = 2 ):
         ax1.set(xlabel='iterations', ylabel="std activation",  title=f"std of activations pr layers")  
         ax1.legend(range(len(hooks)));
     plt.tight_layout()     
+
 #######################################   Learner ########################################################            
 from enum import Enum,auto
 class Stages(Enum):

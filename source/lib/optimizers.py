@@ -172,8 +172,9 @@ lamb = partial(StatefulOptimizer, steppers=[lamb_step],
                stats=[AverageGrad(dampening=True), AverageSqrGrad(), StepCount()])
                    
 ############################## Optimizer combinations  ############################## 
-sgd_wd_opt    = partial(Optimizer, steppers=[weight_decay, sgd_step], wd=0.01)
-sgd_wd_l2_opt = partial(Optimizer, steppers=[weight_decay, sgd_step], wd=0.01)
+sgd_opt        = partial(Optimizer, steppers=[sgd_step])
+sgd_wd_opt     = partial(Optimizer, steppers=[weight_decay, sgd_step], wd=0.01)
+sgd_wd_l2_opt  = partial(Optimizer, steppers=[weight_decay, sgd_step], wd=0.01)
 sgd_mom_wd_opt = partial(StatefulOptimizer,steppers=[momentum_step,weight_decay], 
                          stats=[AverageGrad()], wd=0.01)
 
