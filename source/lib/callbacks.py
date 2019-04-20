@@ -28,21 +28,6 @@ class Callback():
         name = re.sub(r'Callback$', '', self.__class__.__name__)
         return camel2snake(name or 'callback')
         
-class ProgressCallback(Callback):
-    def begin_fit(self,e:Event):
-        self.mbar = master_bar(range(e.learn.epochs))
-        self.mbar.on_iter_begin()
-        e.learn.logger = partial(self.mbar.write, table=True)
-        
-    def after_fit(self,e:Event): self.mbar.on_iter_end()
-    def after_batch(self,e:Event): self.pb.update(e.learn.iter)
-    def begin_train   (self,e:Event): self.set_pb(e.learn)
-    def begin_validate(self,e:Event): self.set_pb(e.learn)
-        
-    def set_pb(self,learn:Learner):
-        self.pb = progress_bar(learn.dl, parent=self.mbar, auto_update=False)
-        self.mbar.update(learn.epoch)
-        
 class CudaCallback(Callback):
     def __init__(self, device): self.device = device
     def begin_fit(  self, e:Event): e.learn.model.to(device)
@@ -98,23 +83,6 @@ class AvgStats():
         self.count += bn
         for i,m in enumerate(self.metrics):
             self.tot_mets[i] += m(learn.preds, learn.yb) * bn
-
-class AvgStatsCallback(Callback):
-    def __init__(self, metrics):
-        self.train_stats, self.valid_stats = AvgStats(metrics,True), AvgStats(metrics,False)
-
-    def begin_epoch(self, e:Event):
-        self.train_stats.reset()
-        self.valid_stats.reset()
-
-    def after_loss(self, e:Event):
-        stats = self.train_stats if e.learn.in_train else self.valid_stats
-        with torch.no_grad(): stats.accumulate(e.learn)
-
-    def after_epoch(self, e:Event):
-        print(self.train_stats)
-        print(self.valid_stats)
-        
 
 
 ###################################### Hooks ###################################### 
@@ -212,7 +180,99 @@ def plot_layer_stats( hooks:Hooks, pct_lower_bins = 2 ):
         ax1.legend(range(len(hooks)));
     plt.tight_layout()     
 
+
+class AvgStatsCallback(Callback):
+    def __init__(self, metrics):
+        self.train_stats, self.valid_stats = AvgStats(metrics,True), AvgStats(metrics,False)
+        self.first=True
+
+    def begin_epoch(self, e:Event):        
+        self.train_stats.reset()
+        self.valid_stats.reset()
+        self.start_time = time.time()
+        if self.first:
+            met_names = ['loss'] + [m.__name__ for m in self.train_stats.metrics]
+            names = ['epoch'] + [f'train_{n}' for n in met_names] + [
+                    f'valid_{n}' for n in met_names] + ['time']
+            e.learn.logger(names)
+            self.first = False
+
+    def after_loss(self, e:Event):
+        stats = self.train_stats if e.learn.in_train else self.valid_stats
+        with torch.no_grad(): stats.accumulate(e.learn)
+
+    def after_epoch(self, e:Event):
+        #print(self.train_stats)
+        #print(self.valid_stats)
+        stats = [str(e.learn.epoch)] 
+        for o in [self.train_stats, self.valid_stats]:
+            stats += [f'{v:.6f}' for v in o.avg_stats] 
+        stats += [format_time(time.time() - self.start_time)]
+        e.learn.logger(stats)
+        
+from IPython.display import display, Javascript
+from fastprogress import master_bar, progress_bar
+from fastprogress.fastprogress import format_time
+class ProgressCallback(Callback):
+    def begin_fit(self,e:Event):
+        self.mbar = master_bar(range(e.learn.epochs))
+        self.mbar.on_iter_begin()
+        e.learn.logger = partial(self.mbar.write, table=True)
+        
+    def after_fit(self,e:Event): self.mbar.on_iter_end()
+    def after_batch(self,e:Event): self.pb.update(e.learn.iter)
+    def begin_train   (self,e:Event): self.set_pb(e.learn)
+    def begin_validate(self,e:Event): self.set_pb(e.learn)
+    def set_pb(self,learn:Learner):
+        self.pb = progress_bar(learn.dl, parent=self.mbar, auto_update=False)
+        self.mbar.update(learn.epoch)        
+        
+class Recorder(Callback):   
+    def begin_fit(self, e:Event):
+        self.lrs,self.train_losses, self.valid_losses = [],[],[]
+        self.optimizers = None
+        self.epochs = e.learn.epochs        
+        
+    def begin_epoch(self, e:Event):        
+        self.valid_losses.append(0)
+        self.valid_iterations = 0
+            
+    def after_batch(self, e:Event):
+        if e.learn.in_train:         
+            if self.optimizers is None : 
+                self.optimizers = { k:[v] for k,v in e.learn.opt.getOptimizers().items() }
+            else:                        
+                for k,v in e.learn.opt.getOptimizers().items(): self.optimizers[k].append(v)            
+            self.train_losses.append(e.learn.loss.detach().cpu())
+        else:
+            self.valid_losses[e.learn.epoch] += e.learn.loss.detach().cpu() * e.learn.xb.shape[0]
+            self.valid_iterations            += e.learn.xb.shape[0]
+            
+    def after_epoch(self, e:Event):  
+        if self.valid_iterations > 0:
+            self.valid_losses[e.learn.epoch] /= self.valid_iterations
+            
+    def plot_lr(self):
+        fig, ax = plt.subplots()
+        for k,v in self.optimizers.items(): ax.plot(v,label=k)
+        ax.legend(loc='upper left')
+        ax.set(xlabel='iteration', ylabel='optimizer', title='optimizers')  
+            
+    def plot_loss(self): 
+        fig, ax = plt.subplots()
+        ticksize    = int(len(self.train_losses)/self.epochs)
+        tick_labels = [i for i in range(1,self.epochs+1)]
+        tick_pos    = [i*ticksize for i in tick_labels]
+        l1 = ax.plot(list(range(len(self.train_losses))),self.train_losses,label="training")
+        l2 = ax.plot(tick_pos,self.valid_losses,label="validation")
+        plt.xticks(tick_pos,tick_labels)    
+        ax.set(xlabel='epochs', ylabel="losses")  
+        ax.legend()
 #######################################   Learner ########################################################            
+class Event():
+    def __init__(self,learner:Learner):
+        self.learn = learner
+
 from enum import Enum,auto
 class Stages(Enum):
     begin_fit = auto()
@@ -240,10 +300,6 @@ train_batch_stages = [Stages.begin_prediction, Stages.after_prediction,
                       Stages.begin_step,       Stages.after_step ]
 valid_batch_stages = [Stages.begin_prediction, Stages.after_prediction,
                       Stages.begin_loss,       Stages.after_loss ]
-
-class Event():
-    def __init__(self,learner:Learner):
-        self.learn = learner
 
 class Messenger():
     subscriptions = None    
@@ -338,8 +394,8 @@ class Learner():
                             
     def one_batch(self, batch_stages, xb, yb):
         event = Event(self)        
+        self.xb,self.yb = xb,yb
         try:
-            self.xb,self.yb = xb,yb
             self.msn.notify(Stages.begin_batch,event)
             for msg in batch_stages: 
                 self.msn.notify(msg,event)

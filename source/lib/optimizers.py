@@ -48,27 +48,6 @@ class OptimizerCallback(Callback):
     def after_batch(self,e:Event): 
         if e.learn.in_train: self.n_iter += 1
 
-class Recorder(Callback):   
-    def begin_fit(self, e:Event):
-        self.lrs,self.losses = [],[]
-        self.optimizers = None
-
-    def after_batch(self, e:Event):
-        if e.learn.in_train:         
-            if self.optimizers is None : 
-                self.optimizers = { k:[v] for k,v in e.learn.opt.getOptimizers().items() }
-            else:                        
-                for k,v in e.learn.opt.getOptimizers().items(): self.optimizers[k].append(v)            
-            self.losses.append(e.learn.loss.detach().cpu())
-
-    def plot_lr(self):
-        fig, ax = plt.subplots()
-        for k,v in self.optimizers.items(): ax.plot(v,label=k)
-        ax.legend(loc='upper left')
-        ax.set(xlabel='iteration', ylabel='optimizer', title='optimizers')  
-            
-    def plot_loss(self): plt.plot(self.losses)
-        
 class LR_Finder(Callback):
     def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10, beta = 0.8):
         self.max_iter,self.min_lr,self.max_lr, self.best_loss = max_iter,min_lr,max_lr, 1e9
@@ -118,7 +97,8 @@ class LR_Finder(Callback):
         plt.legend(loc='lower left')        
 
 class SGD(OptimizerFunction):
-    "params = params - learning_rate * params_grad"
+    "sgd with momentum and weight decay"
+    #params = params - learning_rate * params_grad - learning_rate * wd * params"
     def __init__(self,sched_func, max_lr=0.3, max_wd=0.0): 
         super().__init__(sched_func)
         self.lr, self.max_lr = max_lr, max_lr
@@ -129,9 +109,8 @@ class SGD(OptimizerFunction):
         return {"lr":self.lr,"wd":self.wd}
     def optimize(self, params:Collection[torch.nn.Parameter], mov_avg:torch.nn.Parameter=None):
         for p in params: 
+            if self.wd > 0.: p.data.add_(-self.lr*self.wd,p.data)
             p.data.add_(-self.lr, p.grad.data)
-            if self.wd > 0.:
-                p.data.add_(-self.lr*self.wd,p.data)
             
 class AverageGrad():
     def __init__(self): self.avg = None
@@ -151,7 +130,7 @@ class AverageSqrGrad():
     def __init__(self): 
         self.avg = None
         self.sqr_mom = 0.99
-    
+
     def update(self, mom, params):
         if self.avg is None: 
             #no debiase that the first avg is set to 100% of the first squared gradient
@@ -161,8 +140,9 @@ class AverageSqrGrad():
                 avg.mul_(self.sqr_mom).addcmul_(1-self.sqr_mom, p.grad.data, p.grad.data)
 
 class SGD_Momentum(OptimizerFunction):
+    "sgd with momentum and weight decay"
     #mov_avg = momentum*mov_avg +(1-momentum) * params_grad
-    #params  = params - learning_rate * mov_avg
+    #params  = params - learning_rate * mov_avg - learning_rate * wd * params_grad
     def __init__(self,sched_func, max_lr=0.3, moms=(0.85,0.95), max_wd=0.): 
         super().__init__(sched_func)
         self.lr,  self.max_lr     = max_lr, max_lr
@@ -175,14 +155,15 @@ class SGD_Momentum(OptimizerFunction):
         self.wd  = self.max_wd*self.sched_func(progress) if self.max_wd>0 else 0
         return {"lr":self.lr,"mom":self.mom,"wd":self.wd}
     def optimize(self, params:Collection[torch.nn.Parameter], mov_avg:torch.nn.Parameter=None):
+        
         self.avg_grad.update(self.mom,params)
                 
         for mov_avg,p in zip(self.avg_grad.avg,params) :
+            if self.wd > 0.: p.data.mul_(1-self.lr*self.wd)
             p.data.add_(-self.lr, mov_avg)
-            if self.wd > 0.:
-                p.data.add_(-self.lr*self.wd,p.data)
 
 class Adam(OptimizerFunction):
+    #wd as in Decoupled Weight Decay Regularization: https://arxiv.org/abs/1711.05101
     #momentum_1, momentum_2, eps are typically 0.9, 0.99, 1e-8
     #avg     = momentum_1*avg     +(1-momentum_1) * params_grad
     #sqr_avg = momentum_2*avg +(1-momentum_2) * params_grad * params_grad
@@ -207,9 +188,8 @@ class Adam(OptimizerFunction):
                 
         for p,avg_grad,avg_sqr_grad in zip(params,self.avg_grad.avg,self.avg_sqr_grad.avg) :
             #p.data.add_(-self.lr, avg_grad/(avg_sqr_grad.sqrt()+self.eps))
+            if self.wd > 0.: p.data.mul_(1-self.lr*self.wd)
             p.data.addcdiv_(-self.lr, avg_grad, avg_sqr_grad.sqrt().add_(self.eps) )
-            if self.wd > 0.:
-                p.data.add_(-self.lr*self.wd,p.data)
                         
 
 class LAMB(OptimizerFunction):
