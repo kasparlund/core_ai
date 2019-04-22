@@ -1,5 +1,6 @@
 from lib.callbacks import *
 from typing import *
+from torch import nn
 
 class OptimizerFunction():
     "abstract class to implement optimization of the models parameters and acces the current optimizer parameters"
@@ -223,12 +224,78 @@ class LAMB(OptimizerFunction):
                 
             r2 = step.pow(2).mean().sqrt()     #magnitude of gradients: square-root of mean squared gradients
             
-            p.data.add_(-self.lr * min(r1/(r2+self.eps),10), step)
+            #p.data.add_(-self.lr * min(r1/(r2+self.eps),10), step)
+            p.data.add_(-self.lr * r1/(r2+self.eps), step)
 
 
 
 """
-#must always be used for training        
+## Mixup 
+[mixup article](https://arxiv.org/abs/1710.09412) propose to train the model on a mix of the pictures of the training set. Instead of feeding the model the raw images, we take two (which could be in the same class or not) and do a linear combination of them: in terms of tensor it's
+``` python
+new_image = t * image1 + (1-t) * image2
+```
+where t is a float between 0 and 1. Assuming your targets are one-hot encoded, then the target we assign to that image is the same combination of the original targets:
+``` python
+new_target = t * target1 + (1-t) * target2
+"""
+from torch.distributions.beta import Beta
+
+class NoneReduce():
+    def __init__(self, loss_func): 
+        self.loss_func,self.old_red = loss_func,None
+        
+    def __enter__(self):
+        if hasattr(self.loss_func, 'reduction'):
+            self.old_red = getattr(self.loss_func, 'reduction')
+            setattr(self.loss_func, 'reduction', 'none')
+            return self.loss_func
+        else: return partial(self.loss_func, reduction='none')
+        
+    def __exit__(self, type, value, traceback):
+        if self.old_red is not None: setattr(self.loss_func, 'reduction', self.old_red)    
+
+def unsqueeze(input, dims):
+    for dim in listify(dims): input = torch.unsqueeze(input, dim)
+    return input
+
+def reduce_loss(loss, reduction='mean'):
+    return loss.mean() if reduction=='mean' else loss.sum() if reduction=='sum' else loss    
+
+def lerp(v1, v2, beta): return beta*v1 + (1-beta)*v2
+
+
+class MixUp(Callback):
+    #_order = 90 #Runs after normalization and cuda
+    #should introduce before_transform, after_transform and change  mixup.begin_batch to after_transform
+    #alternatively make group of callbacks to control order
+    def __init__(self, α:float=0.4): self.distrib = Beta(tensor([α]), tensor([α]))
+    
+    def begin_fit(self,e:Event): 
+        self.old_loss_func,e.learn.loss_func = e.learn.loss_func,self.loss_func
+        self.learn = e.learn
+    
+    def begin_batch(self,e:Event):
+        if not e.learn.in_train: return  #Only mixup things during training
+        λ = self.distrib.sample( (e.learn.yb.size(0),) ).squeeze().to(e.learn.xb.device)
+        λ = torch.stack([λ, 1-λ], 1)
+        self.λ  = unsqueeze(λ.max(1)[0], [1,2,3])
+        shuffle = torch.randperm(e.learn.yb.size(0)).to(e.learn.xb.device)
+        xb1,self.yb1 = e.learn.xb[shuffle],e.learn.yb[shuffle]
+        e.learn.xb   = lerp(e.learn.xb, xb1, self.λ)
+        
+    def after_fit(self,e:Event): e.learn.loss_func = self.old_loss_func
+    
+    def loss_func(self, pred, yb):
+        if not self.learn.in_train: return self.old_loss_func(pred, yb)
+        with NoneReduce(self.old_loss_func) as loss_func:
+            loss1 = loss_func(pred, yb)
+            loss2 = loss_func(pred, self.yb1)
+        loss = lerp(loss1, loss2, self.λ)
+        return reduce_loss(loss, getattr(self.old_loss_func, 'reduction', 'mean'))
+
+
+"""
 class ParamScheduler(Callback):
     def __init__(self, pname, sched_func): self.pname, self.sched_func = pname,sched_func
 
@@ -245,3 +312,26 @@ class ParamScheduler(Callback):
     def after_batch(self,e:Event): 
         if e.learn.in_train: self.n_iter += 1
 """
+
+
+########################## Label smoothing ########################
+"""
+Another regularization technique that's often used is label smoothing. It's designed to make the model a little bit less certain of it's decision by changing a little bit its target: instead of wanting to predict 1 for the correct class and 0 for all the others, we ask it to predict `1-ε` for the correct class and `ε` for all the others, with `ε` a (small) positive number and N the number of classes. This can be written as:
+
+$$loss = (1-ε) ce(i) + ε \sum ce(j) / N$$
+
+where `ce(x)` is cross-entropy of `x` (i.e. $-\log(p_{x})$), and `i` is the correct class. This can be coded in a loss function:
+"""
+import torch.nn.functional as F
+class LabelSmoothingCrossEntropy(nn.Module):
+    def __init__(self, ε:float=0.1, reduction='mean'):
+        super().__init__()
+        self.ε,self.reduction = ε,reduction
+    def forward(self, output, target):
+        c = output.size()[-1]
+        log_preds = F.log_softmax(output, dim=-1)
+        loss = reduce_loss(-log_preds.sum(dim=-1), self.reduction)
+        nll  = F.nll_loss(log_preds, target, reduction=self.reduction)
+        return lerp(loss/c, nll, self.ε)
+
+

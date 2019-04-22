@@ -49,7 +49,8 @@ class TrainableModelCallback(Callback):
     def begin_backwards(self,e:Event): 
         if e.learn.in_train: e.learn.loss.backward()
     
-    def begin_loss(self,e:Event): e.learn.loss = e.learn.loss_func(e.learn.preds, e.learn.yb)
+    def begin_loss(self,e:Event): 
+        e.learn.loss = e.learn.loss_func(e.learn.preds, e.learn.yb)
 
 #must always be used for training        
 class TrainEvalCallback(Callback):
@@ -278,6 +279,8 @@ class Stages(Enum):
     begin_fit = auto()
     begin_epoch = auto()
     begin_batch = auto()
+    begin_preprocessing = auto(),
+    after_preprocessing = auto(),
     begin_prediction = auto()
     after_prediction = auto()
     begin_loss = auto()
@@ -294,11 +297,13 @@ class Stages(Enum):
     begin_train = auto()
     after_train = auto()  
     
-train_batch_stages = [Stages.begin_prediction, Stages.after_prediction,
+train_batch_stages = [Stages.begin_preprocessing, Stages.after_preprocessing, 
+                      Stages.begin_prediction, Stages.after_prediction,
                       Stages.begin_loss,       Stages.after_loss,
                       Stages.begin_backwards,  Stages.after_backwards,
                       Stages.begin_step,       Stages.after_step ]
-valid_batch_stages = [Stages.begin_prediction, Stages.after_prediction,
+valid_batch_stages = [Stages.begin_preprocessing, Stages.after_preprocessing,
+                      Stages.begin_prediction, Stages.after_prediction,
                       Stages.begin_loss,       Stages.after_loss ]
 
 class Messenger():
