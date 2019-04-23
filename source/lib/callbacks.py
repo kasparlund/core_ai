@@ -155,15 +155,16 @@ def get_min(h,pct_lower_bins):
     n_bins = h1.shape[0]
     idx    = int(round(pct_lower_bins/100*n_bins) +1)
     return (h1[:idx].sum(0)/h1.sum(0)*100).numpy().astype(np.int)
-        
+
 def plot_layer_stats( hooks:Hooks, pct_lower_bins = 2 ):
-    fig,axes = plt.subplots(2,2, figsize=(15,6))
+    rows = int( len(hooks)/2 + 0.5)
+    fig,axes = plt.subplots(rows,2, figsize=(15,3*rows))
     for i,ax,h in zip(range(len(hooks)),axes.flatten(), hooks):
         ax.imshow(get_hist(h), origin='lower', aspect="auto", interpolation="bicubic")
         ax.set(xlabel='iterations', ylabel="histogram", title=f"layer {i}: ln(output activations+1)")  
     plt.tight_layout()
     
-    fig,axes = plt.subplots(2,2, figsize=(15,6))
+    fig,axes = plt.subplots(rows,2, figsize=(15,3*rows))
     for i,ax,h in zip(range(len(hooks)),axes.flatten(), hooks):
         ax.plot(get_min(h,pct_lower_bins))
         ax.set_ylim(0,100)
