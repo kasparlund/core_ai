@@ -9,37 +9,6 @@ from functools import partial
 import math
 from lib.callbacks import *
 
-def annealer(f):
-    def _inner(start, end): return partial(f, start, end)
-    return _inner
-
-@annealer
-def sched_lin(start, end, pos): return start + pos*(end-start)
-
-@annealer
-def sched_cos(start, end, pos): return start + (1 + math.cos(math.pi*(1-pos))) * (end-start) / 2
-@annealer
-def sched_no(start, end, pos):  return start
-@annealer
-def sched_exp(start, end, pos): return start * (end/start) ** pos
-
-def combine_scheds(pcts, scheds):
-    assert sum(pcts) == 1.
-    pcts = tensor([0] + pcts)
-    assert torch.all(pcts >= 0)
-    pcts = torch.cumsum(pcts, 0)
-    def _inner(pos):
-        idx = (pos >= pcts).nonzero().max()
-        actual_pos = (pos-pcts[idx]) / (pcts[idx+1]-pcts[idx])
-        return scheds[idx](actual_pos)
-    return _inner
-
-
-def normalize(x, m, s): return (x-m)/s
-
-def normalize_to(train, valid):
-    m,s = train.mean(),train.std()
-    return normalize(train, m, s), normalize(valid, m, s)
 
 #model functionality
 class Lambda(nn.Module):
@@ -74,27 +43,8 @@ def get_cnn_layers(n_filters_pr_layer,  input_features, output_features, layer, 
 
 def get_cnn_model(filters_pr_layer,  input_features,  output_features, layer, **kwargs):
     return nn.Sequential(*get_cnn_layers(filters_pr_layer,  input_features, output_features, layer, **kwargs))
-"""
-import math
-def prev_pow_2(x): return 2**math.floor(math.log2(x))
-def get_cnn_layers(data, nfs, layer, **kwargs):
-    def f(ni, nf, stride=2): return layer(ni, nf, 3, stride=stride, **kwargs)
-    l1 = data.c_in
-    l2 = prev_pow_2(l1*3*3)
-    layers =  [f(l1  , l2  , stride=1),
-               f(l2  , l2*2, stride=2),
-               f(l2*2, l2*4, stride=2)]
-    nfs = [l2*4] + nfs
-    layers += [f(nfs[i], nfs[i+1]) for i in range(len(nfs)-1)]
-    layers += [nn.AdaptiveAvgPool2d(1), Lambda(flatten), 
-               nn.Linear(nfs[-1], data.c_out)]
-    return layers
-"""
 
-
-def noop(x): 
-    #print(f"noop:{x.shape}")
-    return x
+def noop(x): return x
 
 class Flatten(nn.Module):
     def forward(self, x): return x.view(x.size(0), -1)
@@ -196,9 +146,7 @@ def xresnet50 (**kwargs): return XResNet.create(4, [3, 4, 6,  3], **kwargs)
 def xresnet101(**kwargs): return XResNet.create(4, [3, 4, 23, 3], **kwargs)
 def xresnet152(**kwargs): return XResNet.create(4, [3, 8, 36, 3], **kwargs)   
 
-def find_modules(m, cond):
-    if cond(m): return [m]
-    return sum([find_modules(o,cond) for o in m.children()], [])
+    
 class GetOneBatchCallback(Callback):
     def after_preprocessing(self, e:Event): 
         self.xb,self.yb = e.learn.xb,e.learn.yb
@@ -211,19 +159,30 @@ def getFirstbatch(model, data:DataBunch, cbs_tranform:BatchTransformXCallback ):
     cb = learn.find_subcription_by_cls(GetOneBatchCallback)
     return cb.xb, cb.yb
 
-def is_lin_layer(l):
-    lin_layers = (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)
-    return isinstance(l, lin_layers)
+def find_modules(m, cond):
+    if cond(m): return [m] 
+    else:       return sum([find_modules(o,cond) for o in m.children()], [])
 
-def model_summary(model, xb:Tensor, find_all=False, print_mod=False):
-    print("model_summary")
+def include_in_summary(l): return not isinstance(l, nn.Sequential)
+
+def model_summary(model, xb:Tensor, only_leaves=True, print_mod=False):
     #device = next(model.parameters()).device
     #xb     = xb.to(device)
-    f      = lambda hook,mod,inp,out: print(f"\n{mod}\n{out.shape}, requires_grad:{out.requires_grad}") if print_mod \
-                                      else print(f"{out.shape}, requires_grad={out.requires_grad}")
-    mods = find_modules(model, is_lin_layer) if find_all else model.children()
+    f      = lambda hook,mod,inp,out: print(f"\n{mod}\n{out.shape}") if print_mod else print(f"{type(mod)} {out.shape}")
+    mods = find_modules(model, include_in_summary) if only_leaves else model.children() #find_modules(model, lambda l: True)
     with Hooks(mods, f) as hooks: model(xb)
-
+     
+def model_grads_summary(module:nn.Module):
+    if isinstance(module, nn.Module):
+        for m in module.children(): 
+            model_grads_summary(m)
+            
+        if len(list(module.children()))==0:
+            requires_grad     = [p.requires_grad for p in module.parameters(recurse=False)]
+            str_requires_grad = "None "    
+            if len(requires_grad) > 0:    
+                str_requires_grad = "False" if sum(requires_grad) == 0 else "True " if sum(requires_grad)==len(requires_grad) else "None"
+            print(f"requires_grad: {str_requires_grad} module {type(module)}")
 
 ################### transfer learning #####################
 #save af model
@@ -240,6 +199,7 @@ def load_model(path, model):
 
 class AdaptiveConcatPool2d(nn.Module):
     def __init__(self, sz=1):
+        print(sz)
         super().__init__()
         self.output_size = sz
         self.ap = nn.AdaptiveAvgPool2d(sz)
@@ -248,18 +208,23 @@ class AdaptiveConcatPool2d(nn.Module):
 
     
     
-# batchnorm must not be modified during transferlearning
-def freeze( model ):
-    #the pretrained part i located i layer 0
-    #model.apply( partial(set_grad, require_grad=False) )
-    #model[0].apply( partial(set_grad, require_grad=False) )
-    for p in model[0].parameters(): p.requires_grad_(False)
+def set_grad(module, requires_grad, train_bn=False):
+    if isinstance(module, (nn.BatchNorm2d)): return
+
+    for p in module.parameters(recurse=False):
+        p.requires_grad_(requires_grad)
+        
+def change_requires_grad(module:nn.Module, requires_grad, train_bn):
+    set_grad(module, requires_grad, train_bn)
+    for m in module.children(): 
+        change_requires_grad(m, requires_grad, train_bn)
+        
+def freeze( model, train_bn=False ):
+    change_requires_grad(model[0], requires_grad=False, train_bn=train_bn)    
+    change_requires_grad(model[1:], requires_grad=True, train_bn=train_bn)
     
-def unfreeze( model ):
-    #the pretrained part i located i layer 0
-    model[0].apply( partial(set_grad, require_grad=True) )
-    #for p in model[0].parameters(): set_grad(p.requires_grad_(True)
-    
+def unfreeze( model, train_bn=False ):
+    change_requires_grad(model,    requires_grad=True, train_bn=train_bn)    
 
 """    
 def bn_splitter(m):
@@ -275,3 +240,21 @@ def bn_splitter(m):
     return g1,g2
 a,b = bn_splitter(learn.model)
 """        
+
+def adapt_model(model, data, norm):
+    #get rid of norm
+    cut   = next( i for i,o in enumerate(model.children()) if isinstance(o,nn.AdaptiveAvgPool2d) )
+    m_cut = model[:cut]
+    
+    xb,_  = getFirstbatch( model, data, partial(BatchTransformXCallback, tfm = norm))
+    pred  = m_cut(xb)
+    ni    = pred.shape[1]
+    
+    m_new = nn.Sequential(
+        m_cut, 
+        #AdaptiveConcatPool2d(), 
+        nn.AdaptiveAvgPool2d(1),
+        Flatten(),
+        nn.Linear(ni, data.c_out))
+        #nn.Linear(ni*2, data.c_out))
+    return m_new
