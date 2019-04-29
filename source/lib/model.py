@@ -74,7 +74,22 @@ def get_cnn_layers(n_filters_pr_layer,  input_features, output_features, layer, 
 
 def get_cnn_model(filters_pr_layer,  input_features,  output_features, layer, **kwargs):
     return nn.Sequential(*get_cnn_layers(filters_pr_layer,  input_features, output_features, layer, **kwargs))
-
+"""
+import math
+def prev_pow_2(x): return 2**math.floor(math.log2(x))
+def get_cnn_layers(data, nfs, layer, **kwargs):
+    def f(ni, nf, stride=2): return layer(ni, nf, 3, stride=stride, **kwargs)
+    l1 = data.c_in
+    l2 = prev_pow_2(l1*3*3)
+    layers =  [f(l1  , l2  , stride=1),
+               f(l2  , l2*2, stride=2),
+               f(l2*2, l2*4, stride=2)]
+    nfs = [l2*4] + nfs
+    layers += [f(nfs[i], nfs[i+1]) for i in range(len(nfs)-1)]
+    layers += [nn.AdaptiveAvgPool2d(1), Lambda(flatten), 
+               nn.Linear(nfs[-1], data.c_out)]
+    return layers
+"""
 
 
 def noop(x): 
@@ -188,13 +203,75 @@ class GetOneBatchCallback(Callback):
     def after_preprocessing(self, e:Event): 
         self.xb,self.yb = e.learn.xb,e.learn.yb
         e.learn.stop = True
+
 def getFirstbatch(model, data:DataBunch, cbs_tranform:BatchTransformXCallback ):
     cbfs  = [cbs_tranform,GetOneBatchCallback]
-    learn = Learner( model, data, loss_func=None, opt=None,cb_funcs=cbfs)
-    learn.fit(1)
+    learn = Learner( model, data, loss_func=None)
+    learn.fit(1, opt=None,cb_funcs=cbfs)
     cb = learn.find_subcription_by_cls(GetOneBatchCallback)
     return cb.xb, cb.yb
+
+def is_lin_layer(l):
+    lin_layers = (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.Linear)
+    return isinstance(l, lin_layers)
+
 def model_summary(model, xb:Tensor, find_all=False, print_mod=False):
-    f = lambda hook,mod,inp,out: print(f"====\n{mod}\n" if print_mod else "", out.shape)
-    with Hooks(model, f) as hooks: model(xb)
+    print("model_summary")
+    #device = next(model.parameters()).device
+    #xb     = xb.to(device)
+    f      = lambda hook,mod,inp,out: print(f"\n{mod}\n{out.shape}, requires_grad:{out.requires_grad}") if print_mod \
+                                      else print(f"{out.shape}, requires_grad={out.requires_grad}")
+    mods = find_modules(model, is_lin_layer) if find_all else model.children()
+    with Hooks(mods, f) as hooks: model(xb)
+
+
+################### transfer learning #####################
+#save af model
+def save_model(path, model):
+    mdl_path = path/'models'
+    mdl_path.mkdir(exist_ok=True)
+    st = model.state_dict()
+    torch.save(st, mdl_path/'iw5')
     
+def load_model(path, model):
+    mdl_path = path/'models'
+    st = torch.load(mdl_path/'iw5')    
+    model.load_state_dict(st)
+
+class AdaptiveConcatPool2d(nn.Module):
+    def __init__(self, sz=1):
+        super().__init__()
+        self.output_size = sz
+        self.ap = nn.AdaptiveAvgPool2d(sz)
+        self.mp = nn.AdaptiveMaxPool2d(sz)
+    def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
+
+    
+    
+# batchnorm must not be modified during transferlearning
+def freeze( model ):
+    #the pretrained part i located i layer 0
+    #model.apply( partial(set_grad, require_grad=False) )
+    #model[0].apply( partial(set_grad, require_grad=False) )
+    for p in model[0].parameters(): p.requires_grad_(False)
+    
+def unfreeze( model ):
+    #the pretrained part i located i layer 0
+    model[0].apply( partial(set_grad, require_grad=True) )
+    #for p in model[0].parameters(): set_grad(p.requires_grad_(True)
+    
+
+"""    
+def bn_splitter(m):
+    def _bn_splitter(l, g1, g2):
+        if isinstance(l, nn.BatchNorm2d): g2 += l.parameters()
+        elif hasattr(l, 'weight'): g1 += l.parameters()
+        for ll in l.children(): _bn_splitter(ll, g1, g2)
+        
+    g1,g2 = [],[]
+    _bn_splitter(m[0], g1, g2)
+    
+    g2 += m[1:].parameters()
+    return g1,g2
+a,b = bn_splitter(learn.model)
+"""        

@@ -4,9 +4,15 @@ from pathlib import Path
 import os
 import yaml
 from gzip import *
+from typing import *
+from lib.utilities import *
+import tarfile
+import shutil
 
 
 __all__ = ['URLs', 'Config', 'untar_data', 'download_data', 'datapath4file', 'url2name', 'url2path']
+
+
 
 MODEL_URL = 'http://files.fast.ai/models/'
 URL = 'http://files.fast.ai/data/examples/'
@@ -191,7 +197,7 @@ def url2name(url): return url.split('/')[-1]
 def url2path(url, data=True, ext:str='.tgz'):
     "Change `url` to a path."
     name = url2name(url)
-    return datapath4file(name, ext=ext) if data else modelpath4file(name, ext=ext)
+    return datapath4file(name, ext=ext, archive=False) if data else modelpath4file(name, ext=ext)
 def _url2tgz(url, data=True, ext:str='.tgz'):
     return datapath4file(f'{url2name(url)}{ext}', ext=ext) if data else modelpath4file(f'{url2name(url)}{ext}', ext=ext)
 
@@ -206,6 +212,120 @@ def datapath4file(filename, ext:str='.tgz', archive=True):
     local_path = URLs.LOCAL_PATH/'data'/filename
     if local_path.exists() or local_path.with_suffix(ext).exists(): return local_path
     elif archive: return Config.data_archive_path() / filename
+    else: return Config.data_path() / filename
+
+PathOrStr = Union[Path,str]
+def download_data(url:str, fname:PathOrStr=None, data:bool=True, ext:str='.tgz') -> Path:
+    "Download `url` to destination `fname`."
+    fname = Path(ifnone(fname, _url2tgz(url, data, ext=ext)))
+    os.makedirs(fname.parent, exist_ok=True)
+    if not fname.exists():
+        print(f'Downloading {url}')
+        download_url(f'{url}{ext}', fname)
+    return fname
+
+def _check_file(fname):
+    size = os.path.getsize(fname)
+    with open(fname, "rb") as f:
+        hash_nb = hashlib.md5(f.read(2**20)).hexdigest()
+    return size,hash_nb
+
+def untar_data(url:str, fname:PathOrStr=None, dest:PathOrStr=None, data=True, force_download=False) -> Path:
+    "Download `url` to `fname` if it doesn't exist, and un-tgz to folder `dest`."
+    dest = url2path(url, data) if dest is None else Path(dest)/url2name(url)
+    fname = Path(ifnone(fname, _url2tgz(url, data)))
+    if force_download or (fname.exists() and url in _checks and _check_file(fname) != _checks[url]):
+        print(f"A new version of the {'dataset' if data else 'model'} is available.")
+        if fname.exists(): os.remove(fname)
+        if dest.exists(): shutil.rmtree(dest)
+    if not dest.exists():
+        fname = download_data(url, fname=fname, data=data)
+        if url in _checks:
+            assert _check_file(fname) == _checks[url], f"Downloaded file {fname} does not match checksum expected! Remove that file from {Config().data_archive_path()} and try your code again."
+        tarfile.open(fname, 'r:gz').extractall(dest.parent)
+    return dest
+
+#TODO: This can probably be coded more shortly and nicely.
+class Config():
+    "Creates a default config file 'config.yml' in $FASTAI_HOME (default `~/.fastai/`)"
+    DEFAULT_CONFIG_LOCATION = os.path.expanduser(os.getenv('FASTAI_HOME', '~/.fastai'))
+    DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_LOCATION + '/config.yml'
+    DEFAULT_CONFIG = {
+        'data_path': DEFAULT_CONFIG_LOCATION + '/data',
+        'data_archive_path': DEFAULT_CONFIG_LOCATION + '/data',
+        'model_path': DEFAULT_CONFIG_LOCATION + '/models'
+    }
+
+    @classmethod
+    def get_key(cls, key):
+        "Get the path to `key` in the config file."
+        return cls.DEFAULT_CONFIG.get(key,None)
+        #print(f"cls.get():{cls.get()}")
+        #print(f"cls.get().get(key, cls.DEFAULT_CONFIG.get(key,None)) {cls.get().get(key, cls.DEFAULT_CONFIG.get(key,None))}")
+        #return cls.get().get(key, cls.DEFAULT_CONFIG.get(key,None))
+
+    @classmethod
+    def get_path(cls, path):
+        "Get the `path` in the config file."
+        return _expand_path(cls.get_key(path))
+
+    @classmethod
+    def data_path(cls):
+        "Get the path to data in the config file."
+        return cls.get_path('data_path')
+
+    @classmethod
+    def data_archive_path(cls):
+        "Get the path to data archives in the config file."
+        return cls.get_path('data_archive_path')
+
+    @classmethod
+    def model_path(cls):
+        "Get the path to fastai pretrained models in the config file."
+        return cls.get_path('model_path')
+
+    @classmethod
+    def get(cls, fpath=None, create_missing=True):
+        "Retrieve the `Config` in `fpath`."
+        fpath = _expand_path(fpath or cls.DEFAULT_CONFIG_PATH)
+        if not fpath.exists() and create_missing: cls.create(fpath)
+        assert fpath.exists(), f'Could not find config at: {fpath}. Please create'
+        with open(fpath, 'r') as yaml_file: return yaml.safe_load(yaml_file)
+
+    @classmethod
+    def create(cls, fpath):
+        "Creates a `Config` from `fpath`."
+        fpath = _expand_path(fpath)
+        assert(fpath.suffix == '.yml')
+        if fpath.exists(): return
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        with open(fpath, 'w') as yaml_file:
+            yaml.dump(cls.DEFAULT_CONFIG, yaml_file, default_flow_style=False)
+
+def _expand_path(fpath): return Path(fpath).expanduser()
+def url2name(url): return url.split('/')[-1]
+
+#TODO: simplify this mess
+def url2path(url, data=True, ext:str='.tgz'):
+    "Change `url` to a path."
+    name = url2name(url)
+    return datapath4file(name, ext=ext) if data else modelpath4file(name, ext=ext)
+def _url2tgz(url, data=True, ext:str='.tgz'):
+    return datapath4file(f'{url2name(url)}{ext}', ext=ext) if data else modelpath4file(f'{url2name(url)}{ext}', ext=ext)
+
+def modelpath4file(filename, ext:str='.tgz'):
+    "Return model path to `filename`, checking locally first then in the config file."
+    local_path = URLs.LOCAL_PATH/'models'/filename
+    if local_path.exists() or local_path.with_suffix(ext).exists(): return local_path
+    else: return Config.model_path()/filename
+
+def datapath4file(filename, ext:str='.tgz', archive=True):
+    "Return data path to `filename`, checking locally first then in the config file."
+    local_path = URLs.LOCAL_PATH/'data'/filename
+    if local_path.exists() or local_path.with_suffix(ext).exists(): 
+        return local_path
+    elif archive: 
+        return Config.data_archive_path() / filename
     else: return Config.data_path() / filename
 
 def download_data(url:str, fname:[Path or str]=None, data:bool=True, ext:str='.tgz') -> Path:

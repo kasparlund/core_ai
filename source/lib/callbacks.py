@@ -1,5 +1,7 @@
 from __future__ import annotations
 #from .torch import *
+from collections.abc import Iterable
+
 from torch import tensor
 import torch as torch
 import matplotlib.pyplot as plt
@@ -7,19 +9,8 @@ import time
 from fastprogress import master_bar, progress_bar
 from fastprogress.fastprogress import format_time
 #import torch.nn.functional as F
+from lib.utilities import *
 
-###################### Utility #######################
-def listify(o):
-    if o is None: return []
-    if isinstance(o, list): return o
-    if isinstance(o, str): return [o]
-    if isinstance(o, Iterable): return list(o)
-    return [o]
-
-def compose(x, funcs, *args, order_key='_order', **kwargs):
-    key = lambda o: getattr(o, order_key, 0)
-    for f in sorted(listify(funcs), key=key): x = f(x, **kwargs)
-    return x
 
 ###################### Callbacks #######################
 class Callback():
@@ -85,6 +76,14 @@ class AvgStats():
         for i,m in enumerate(self.metrics):
             self.tot_mets[i] += m(learn.preds, learn.yb) * bn
 
+"""
+class DebugCallback(Callback):
+    def __init__(self, cb_name, f_cond=None): self.cb_name,self.f_cond = cb_name,f_cond
+    def __call__(self, cb_name):
+        if cb_name==self.cb_name:
+            if self.f_cond: self.f_cond(self.run)
+            else:      set_trace()
+"""
 
 ###################################### Hooks ###################################### 
 from functools import partial
@@ -94,22 +93,6 @@ class Hook():
     def remove(self): self.hook.remove()
     def __del__(self): self.remove()
 
-class ListContainer():
-    def __init__(self, items): self.items = items
-    def __getitem__(self, idx):
-        if isinstance(idx, (int,slice)): return self.items[idx]
-        if isinstance(idx[0],bool):
-            assert len(idx)==len(self) # bool mask
-            return [o for m,o in zip(idx,self.items) if m]
-        return [self.items[i] for i in idx]
-    def __len__(self): return len(self.items)
-    def __iter__(self): return iter(self.items)
-    def __setitem__(self, i, o): self.items[i] = o
-    def __delitem__(self, i): del(self.items[i])
-    def __repr__(self):
-        res = f'{self.__class__.__name__} ({len(self)} items)\n{self.items[:10]}'
-        if len(self)>10: res = res[:-1]+ '...]'
-        return res
 
 class Hooks(ListContainer):
     def __init__(self, model, f): super().__init__([Hook(layer, f) for layer in model])
@@ -340,10 +323,8 @@ class Learner():
     _data    = None
     _stop    = None
     
-    def __init__(self, model, data, loss_func, opt, cb_funcs):
-        self.model,self._data,self.loss_func,self.opt = model,data,loss_func,opt
-        self.msn = Messenger()
-        self.msn.register_callback_functions(cb_funcs)
+    def __init__(self, model, data, loss_func):
+        self.model,self._data,self.loss_func = model,data,loss_func
         #for cb in listify(cbs): self.msn.register(cb)
         self._stop = False
         self.logger = print
@@ -358,8 +339,13 @@ class Learner():
     def stop(self, value): 
         if not self._stop : self._stop = value 
 
-    def fit(self, epochs):
+    def fit(self, epochs, opt, cb_funcs):
         self.epochs, self.loss = epochs, tensor(0.)
+
+        self.msn = Messenger()
+        self.msn.register_callback_functions(cb_funcs)
+        self.opt = opt
+
         event = Event(self)
         try:
             self.msn.notify(Stages.begin_fit, event)
@@ -383,6 +369,8 @@ class Learner():
                 self.msn.notify(Stages.after_epoch,event)
         except Exception as e: self.exception_handler(e)
         finally: self.msn.notify(Stages.after_fit, event)
+
+        self.epoch, self.in_train = 0, False
                     
     def all_batches(self, dl, batch_stages, begin_msg:Stages, after_msg:Stages):
         event = Event(self)        
@@ -397,7 +385,7 @@ class Learner():
                 self.one_batch(batch_stages, xb, yb)
         except Exception as e: self.exception_handler(e)
         finally: self.msn.notify(after_msg,event)
-                            
+        self.dl = None       
     def one_batch(self, batch_stages, xb, yb):
         event = Event(self)        
         self.xb,self.yb = xb,yb
@@ -407,6 +395,7 @@ class Learner():
                 self.msn.notify(msg,event)
         except Exception as e: self.exception_handler(e)
         finally: self.msn.notify(Stages.after_batch,event)
+        self.xb,self.yb = None,None
 
     def exception_handler(self, e:Exception ):
         self.stop = True
