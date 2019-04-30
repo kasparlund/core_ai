@@ -1,6 +1,7 @@
 from lib.callbacks import *
 from typing import *
 from torch import nn
+import math
 
 def annealer(f):
     def _inner(start, end): return partial(f, start, end)
@@ -26,7 +27,6 @@ def combine_scheds(pcts, scheds):
         actual_pos = (pos-pcts[idx]) / (pcts[idx+1]-pcts[idx])
         return scheds[idx](actual_pos)
     return _inner
-
 
 
 class OptimizerFunction():

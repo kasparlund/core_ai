@@ -4,13 +4,10 @@ from torch import nn
 from torch import tensor
 from torch.nn import init
 import torch.nn.functional as F
-import torch as torch
+#import torch as torch
 from functools import partial
-import math
 from lib.callbacks import *
 
-
-#model functionality
 class Lambda(nn.Module):
     def __init__(self, func):
         super().__init__()
@@ -22,19 +19,6 @@ def flatten(x):      return x.view(x.shape[0], -1)
 def view_tfm(*size):
     def _inner(x): return x.view(*((-1,)+size))
     return _inner
-
-def children(m  ): return list(m.children())
-
-##################################################
-def init_cnn_(m, f):
-    if isinstance(m, nn.Conv2d):
-        f(m.weight, a=0.1)
-        if getattr(m, 'bias', None) is not None: m.bias.data.zero_()
-    for l in m.children(): init_cnn_(l, f)
-
-def init_cnn(m, uniform=False):
-    f = init.kaiming_uniform_ if uniform else init.kaiming_normal_
-    init_cnn_(m, f)
 
 def get_cnn_layers(n_filters_pr_layer,  input_features, output_features, layer, **kwargs):
     nfs = [input_features] + n_filters_pr_layer
@@ -80,11 +64,6 @@ def conv_layer(ni, nf, ks, stride, bn, zero_bn, act):
     if act is not None: 
         layers.append(act())
     return nn.Sequential(*layers)
-
-def init_cnn_resnet(m):
-    if getattr(m, 'bias', None) is not None: nn.init.constant_(m.bias, 0)
-    if isinstance(m, (nn.Conv2d,nn.Linear)): nn.init.kaiming_normal_(m.weight)
-    for l in m.children(): init_cnn_resnet(l)
 
 act_fn = partial(nn.ReLU,inplace=True)()
 class ResBlock(nn.Module):
@@ -146,115 +125,4 @@ def xresnet50 (**kwargs): return XResNet.create(4, [3, 4, 6,  3], **kwargs)
 def xresnet101(**kwargs): return XResNet.create(4, [3, 4, 23, 3], **kwargs)
 def xresnet152(**kwargs): return XResNet.create(4, [3, 8, 36, 3], **kwargs)   
 
-    
-class GetOneBatchCallback(Callback):
-    def after_preprocessing(self, e:Event): 
-        self.xb,self.yb = e.learn.xb,e.learn.yb
-        e.learn.stop = True
-
-def getFirstbatch(model, data:DataBunch, cbs_tranform:BatchTransformXCallback ):
-    cbfs  = [cbs_tranform,GetOneBatchCallback]
-    learn = Learner( model, data, loss_func=None)
-    learn.fit(1, opt=None,cb_funcs=cbfs)
-    cb = learn.find_subcription_by_cls(GetOneBatchCallback)
-    return cb.xb, cb.yb
-
-def find_modules(m, cond):
-    if cond(m): return [m] 
-    else:       return sum([find_modules(o,cond) for o in m.children()], [])
-
-def include_in_summary(l): return not isinstance(l, nn.Sequential)
-
-def model_summary(model, xb:Tensor, only_leaves=True, print_mod=False):
-    #device = next(model.parameters()).device
-    #xb     = xb.to(device)
-    f      = lambda hook,mod,inp,out: print(f"\n{mod}\n{out.shape}") if print_mod else print(f"{type(mod)} {out.shape}")
-    mods = find_modules(model, include_in_summary) if only_leaves else model.children() #find_modules(model, lambda l: True)
-    with Hooks(mods, f) as hooks: model(xb)
-     
-def model_grads_summary(module:nn.Module):
-    if isinstance(module, nn.Module):
-        for m in module.children(): 
-            model_grads_summary(m)
-            
-        if len(list(module.children()))==0:
-            requires_grad     = [p.requires_grad for p in module.parameters(recurse=False)]
-            str_requires_grad = "None "    
-            if len(requires_grad) > 0:    
-                str_requires_grad = "False" if sum(requires_grad) == 0 else "True " if sum(requires_grad)==len(requires_grad) else "None"
-            print(f"requires_grad: {str_requires_grad} module {type(module)}")
-
-################### transfer learning #####################
-#save af model
-def save_model(path, model):
-    mdl_path = path/'models'
-    mdl_path.mkdir(exist_ok=True)
-    st = model.state_dict()
-    torch.save(st, mdl_path/'iw5')
-    
-def load_model(path, model):
-    mdl_path = path/'models'
-    st = torch.load(mdl_path/'iw5')    
-    model.load_state_dict(st)
-
-class AdaptiveConcatPool2d(nn.Module):
-    def __init__(self, sz=1):
-        print(sz)
-        super().__init__()
-        self.output_size = sz
-        self.ap = nn.AdaptiveAvgPool2d(sz)
-        self.mp = nn.AdaptiveMaxPool2d(sz)
-    def forward(self, x): return torch.cat([self.mp(x), self.ap(x)], 1)
-
-    
-    
-def set_grad(module, requires_grad, train_bn=False):
-    if isinstance(module, (nn.BatchNorm2d)): return
-
-    for p in module.parameters(recurse=False):
-        p.requires_grad_(requires_grad)
-        
-def change_requires_grad(module:nn.Module, requires_grad, train_bn):
-    set_grad(module, requires_grad, train_bn)
-    for m in module.children(): 
-        change_requires_grad(m, requires_grad, train_bn)
-        
-def freeze( model, train_bn=False ):
-    change_requires_grad(model[0], requires_grad=False, train_bn=train_bn)    
-    change_requires_grad(model[1:], requires_grad=True, train_bn=train_bn)
-    
-def unfreeze( model, train_bn=False ):
-    change_requires_grad(model,    requires_grad=True, train_bn=train_bn)    
-
-"""    
-def bn_splitter(m):
-    def _bn_splitter(l, g1, g2):
-        if isinstance(l, nn.BatchNorm2d): g2 += l.parameters()
-        elif hasattr(l, 'weight'): g1 += l.parameters()
-        for ll in l.children(): _bn_splitter(ll, g1, g2)
-        
-    g1,g2 = [],[]
-    _bn_splitter(m[0], g1, g2)
-    
-    g2 += m[1:].parameters()
-    return g1,g2
-a,b = bn_splitter(learn.model)
-"""        
-
-def adapt_model(model, data, norm):
-    #get rid of norm
-    cut   = next( i for i,o in enumerate(model.children()) if isinstance(o,nn.AdaptiveAvgPool2d) )
-    m_cut = model[:cut]
-    
-    xb,_  = getFirstbatch( model, data, partial(BatchTransformXCallback, tfm = norm))
-    pred  = m_cut(xb)
-    ni    = pred.shape[1]
-    
-    m_new = nn.Sequential(
-        m_cut, 
-        #AdaptiveConcatPool2d(), 
-        nn.AdaptiveAvgPool2d(1),
-        Flatten(),
-        nn.Linear(ni, data.c_out))
-        #nn.Linear(ni*2, data.c_out))
-    return m_new
+################### top is refactored from the code below this line #####################

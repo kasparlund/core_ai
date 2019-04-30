@@ -71,7 +71,6 @@ def uniqueify(x, sort=False):
     return res
 
 ####################  operations  ##################
-
 def compose(x, funcs, *args, order_key='_order', **kwargs):
     key = lambda o: getattr(o, order_key, 0)
     for f in sorted(listify(funcs), key=key): x = f(x, **kwargs)
@@ -110,6 +109,18 @@ def download_url(url:str, dest:str, overwrite:bool=False, pbar:progress_bar=None
                           f'And re-run your code once the download is successful\n')
             print(timeout_txt)
             import sys;sys.exit(1)
+
+################################  Processor baseclass  ##################################
+class Processor(): 
+    def process(self, items): return items
+
+################################  load picled trainings data  ##################################
+def load_pickled_train_valid_data(path:Path):
+    with gzip.open(path, 'rb') as f:
+        ((x_train, y_train), (x_valid, y_valid), _) = pickle.load(f, encoding='latin-1')
+    return map(tensor, (x_train,y_train,x_valid,y_valid))
+
+
 
 ########################################  Test  ########################################
 import operator

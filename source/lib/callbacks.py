@@ -18,7 +18,13 @@ class Callback():
     def name(self):
         name = re.sub(r'Callback$', '', self.__class__.__name__)
         return camel2snake(name or 'callback')
-        
+
+#generalize this callback to debug callback
+class GetOneBatchCallback(Callback):
+    def after_preprocessing(self, e:Event): 
+        self.xb,self.yb = e.learn.xb,e.learn.yb
+        e.learn.stop = True
+
 class CudaCallback(Callback):
     def __init__(self, device): self.device = device
     def begin_fit(  self, e:Event): e.learn.model.to(device)
@@ -385,7 +391,8 @@ class Learner():
                 self.one_batch(batch_stages, xb, yb)
         except Exception as e: self.exception_handler(e)
         finally: self.msn.notify(after_msg,event)
-        self.dl = None       
+        self.dl = None
+             
     def one_batch(self, batch_stages, xb, yb):
         event = Event(self)        
         self.xb,self.yb = xb,yb
