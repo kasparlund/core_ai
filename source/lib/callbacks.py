@@ -26,8 +26,8 @@ class GetOneBatchCallback(Callback):
 
 class CudaCallback(Callback):
     def __init__(self, device): self.device = device
-    def begin_fit(  self, e:Event): e.learn.model.to(device)
-    def begin_batch(self, e:Event): e.learn.xb, e.learn.yb = e.learn.xb.to(device),e.learn.yb.to(device)
+    def begin_fit(  self, e:Event): e.learn.model.to(self.device)
+    def begin_batch(self, e:Event): e.learn.xb, e.learn.yb = e.learn.xb.to(self.device),e.learn.yb.to(self.device)
 
 class SimpleCudaCallback(Callback):
     def __init__(self, device): super()(device = torch.device('cuda',0))
