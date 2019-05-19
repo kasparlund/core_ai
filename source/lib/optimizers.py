@@ -1,7 +1,8 @@
-from lib.callbacks import *
 from typing import *
 from torch import nn
 import math
+
+from .callbacks import *
 
 def annealer(f):
     def _inner(start, end): return partial(f, start, end)
@@ -76,7 +77,7 @@ class OptimizerCallback(Callback):
     def after_batch(self,e:Event): 
         if e.learn.in_train: self.n_iter += 1
 
-class LR_Finder(Callback):
+class LRFinder(Callback):
     def __init__(self, max_iter=100, min_lr=1e-6, max_lr=10, beta = 0.8):
         self.max_iter,self.min_lr,self.max_lr, self.best_loss = max_iter,min_lr,max_lr, 1e9
         self.beta = beta
@@ -302,7 +303,7 @@ class MixUp(Callback):
         self.old_loss_func,e.learn.loss_func = e.learn.loss_func,self.loss_func
         self.learn = e.learn
     
-    def begin_batch(self,e:Event):
+    def after_preprocessing(self,e:Event):
         if not e.learn.in_train: return  #Only mixup things during training
         λ = self.distrib.sample( (e.learn.yb.size(0),) ).squeeze().to(e.learn.xb.device)
         λ = torch.stack([λ, 1-λ], 1)

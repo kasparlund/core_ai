@@ -1,13 +1,13 @@
-#from .core import *
 import hashlib
 from pathlib import Path
 import os
 import yaml
 from gzip import *
 from typing import *
-from lib.utilities import *
 import tarfile
 import shutil
+
+from .utilities import *
 
 
 __all__ = ['URLs', 'Config', 'untar_data', 'download_data', 'datapath4file', 'url2name', 'url2path']

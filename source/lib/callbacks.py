@@ -1,15 +1,14 @@
 from __future__ import annotations
-#from .torch import *
 from collections.abc import Iterable
-
 from torch import tensor
 import torch as torch
 import matplotlib.pyplot as plt
 import time
 from fastprogress import master_bar, progress_bar
 from fastprogress.fastprogress import format_time
-#import torch.nn.functional as F
-from lib.utilities import *
+
+from .utilities import *
+from .model import *
 
 
 ###################### Callbacks #######################
@@ -101,7 +100,12 @@ class Hook():
 
 
 class Hooks(ListContainer):
-    def __init__(self, model, f): super().__init__([Hook(layer, f) for layer in model])
+    def __init__(self, model, f): 
+        modules = find_submodules(model, lambda m: isinstance(m, (nn.Conv2d,nn.Linear) ))
+        for m in modules: print(f"layer {type(m)}")
+        #super().__init__([Hook(layer, f) for layer in model])
+        super().__init__([Hook(m, f) for m in modules])
+            
     def __enter__(self, *args): return self
     def __exit__ (self, *args): self.remove()
     def __del__(self): self.remove()
@@ -126,13 +130,13 @@ class HookCallback(Callback):
             self.losses.append(e.learn.loss.detach().cpu())
 
 
-def append_stats(hook, module, inp, outp):
+def append_stats(hook, module, inp, outp, max_activation=5):
     if module.training:
         if not hasattr(hook,'stats'): hook.stats = ([],[],[])
         means,stds,hists = hook.stats
         means.append(outp.data.mean().cpu())
         stds .append(outp.data.std().cpu())
-        hists.append(outp.data.cpu().histc(40,0,10)) #histc isn't implemented on the GPU
+        hists.append(outp.data.cpu().histc(100,-max_activation,max_activation)) #histc isn't implemented on the GPU
 
 
 import numpy as np
@@ -140,7 +144,7 @@ def get_hist(h):
     return torch.stack(h.stats[2]).t().float().log1p()
 
 def get_min(h,pct_lower_bins):
-    h1 = torch.stack(h.stats[2]).t().float()
+    h1     = torch.stack(h.stats[2]).t().float()
     n_bins = h1.shape[0]
     idx    = int(round(pct_lower_bins/100*n_bins) +1)
     return (h1[:idx].sum(0)/h1.sum(0)*100).numpy().astype(np.int)
@@ -343,6 +347,7 @@ class Learner():
     def stop(self): return self._stop
     @stop.setter 
     def stop(self, value): 
+        print("stop")
         if not self._stop : self._stop = value 
 
     def fit(self, epochs, opt, cb_funcs):

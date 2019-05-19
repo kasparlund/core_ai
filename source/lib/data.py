@@ -6,7 +6,7 @@ import pickle
 import gzip
 import random
 from pathlib import Path
-from lib.utilities import *
+from .utilities import *
 
 class Dataset():
     def __init__(self, x, y): self.x,self.y = x,y
@@ -22,6 +22,7 @@ class DataBunch():
 
     @property
     def valid_ds(self): return self.valid_dl.dataset
+
 
 ################### file processing ###################
 import os
@@ -96,28 +97,8 @@ class SplitData():
 ########################  labelling of categorical data  ########################
 """
 Labeling has to be done *after* splitting, because it uses *training* set information to apply to 
-the *validation* set
-
-A *Processor* is a transformation that is applied to all the inputs once at initialization, 
-with some *state* computed on the training set that is then applied without modification on 
-the validation set (and maybe the test set or at inference time on a single item). 
-
-For instance, it could be **processing texts** to **tokenize**, then **numericalize** them. 
-In that case we want the validation set to be numericalized with exactly the same vocabulary as the training set.
-
-Another example is in **tabular data**, where we **fill missing values** with (for instance) 
-the median computed on the training set. That statistic is stored in the inner state of the *Processor* 
-and applied on the validation set.
-
-In our case, we want to **convert label strings to numbers** in a consistent and reproducible way. 
-So we create a list of possible labels in the training set, and then convert our labels to numbers 
-based on this *vocab*.
-"""
-"""
-Here we label according to the folders of the images, so simply fn.parent.name. 
-We label the training set first with a newly created CategoryProcessor so that it computes its 
-inner vocab on that set. Then we label the validation set using the same processor, which means it 
-uses the same vocab. The end result is another SplitData object.
+the *validation* set. In order to **convert label strings to numbers** we create a vocab with a list 
+of possible labels in the training set, and then convert them to numbers based on this *vocab*.
 """
 class CategoryProcessor(Processor):
     def __init__(self): self.vocab=None
@@ -166,6 +147,10 @@ class LabeledData():
 
 
 #################### Transform ##############################
+def view_tfm(*size):
+    def _inner(x): return x.view(*((-1,)+size))
+    return _inner
+
 class Transform(): 
     pass
 

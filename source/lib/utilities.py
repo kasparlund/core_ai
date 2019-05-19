@@ -1,8 +1,11 @@
 import os
 import requests
+import gzip, pickle
+from torch import tensor
+
 from fastprogress import master_bar, progress_bar
 from fastprogress.fastprogress import format_time
-from lib.datasets import *
+from .datasets import *
 
 from collections import Iterable
 from collections.abc import Iterable
