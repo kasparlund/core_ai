@@ -17,7 +17,7 @@ class ModelManager():
         #device = next(model.parameters()).device
         #xb     = xb.to(device)
         f      = lambda hook,mod,inp,out: print(f"\n{mod}\n{out.shape}") if print_mod else print(f"{type(mod)} {out.shape}")
-        mods = self.find_modules(lambda m: not isinstance(m, nn.Sequential)) if only_leaves else \
+        mods = self.find_modules(lambda m: not isinstance(m, nn.Sequential) and not isinstance(m, ResBlock) ) if only_leaves else \
                self.model.children() 
         with Hooks(mods, f) as hooks: self.model(xb)
 
@@ -89,7 +89,7 @@ class ModelManager():
 
 class CnnModelManager(ModelManager):
 
-    def initialize(self, is_resnet:bool, uniform:bool=False, a=0.0):
+    def initialize(self, is_resnet:bool, uniform:bool=False, a=0.0, nonlinearity="relu"):
         if isinstance(self.model,XResNet): 
             self.model.initialize(uniform, a)
 

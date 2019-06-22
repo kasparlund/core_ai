@@ -197,7 +197,7 @@ class Adam(OptimizerFunction):
     #avg     = momentum_1*avg     +(1-momentum_1) * params_grad
     #sqr_avg = momentum_2*avg +(1-momentum_2) * params_grad * params_grad
     #params  = params - learning_rate * avg / (sqrt(sqr_avg)+eps)
-    def __init__(self,sched_func, max_lr=0.3, moms=(0.85,0.95), max_wd=0.): 
+    def __init__(self,sched_func, max_lr=0.3, moms=(0.95,0.85), max_wd=0.): 
         super().__init__(sched_func)
         self.lr,  self.max_lr     = max_lr, max_lr
         self.mom, self.moms_range = moms[1], moms

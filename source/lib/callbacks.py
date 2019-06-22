@@ -94,16 +94,13 @@ class DebugCallback(Callback):
 from functools import partial
 class Hook():
     def __init__(self, layer, func): 
-        self.hook = layer.register_forward_hook(partial(func, self))
+        self.layer, self.hook = layer, layer.register_forward_hook(partial(func, self))
     def remove(self): self.hook.remove()
     def __del__(self): self.remove()
 
 
 class Hooks(ListContainer):
-    def __init__(self, model, f): 
-        modules = find_submodules(model, lambda m: isinstance(m, (nn.Conv2d,nn.Linear) ))
-        for m in modules: print(f"layer {type(m)}")
-        #super().__init__([Hook(layer, f) for layer in model])
+    def __init__(self, modules, f): 
         super().__init__([Hook(m, f) for m in modules])
             
     def __enter__(self, *args): return self
@@ -137,43 +134,6 @@ def append_stats(hook, module, inp, outp, max_activation=5):
         means.append(outp.data.mean().cpu())
         stds .append(outp.data.std().cpu())
         hists.append(outp.data.cpu().histc(100,-max_activation,max_activation)) #histc isn't implemented on the GPU
-
-
-import numpy as np
-def get_hist(h): 
-    return torch.stack(h.stats[2]).t().float().log1p()
-
-def get_min(h,pct_lower_bins):
-    h1     = torch.stack(h.stats[2]).t().float()
-    n_bins = h1.shape[0]
-    idx    = int(round(pct_lower_bins/100*n_bins) +1)
-    return (h1[:idx].sum(0)/h1.sum(0)*100).numpy().astype(np.int)
-
-def plot_layer_stats( hooks:Hooks, pct_lower_bins = 2 ):
-    rows = int( len(hooks)/2 + 0.5)
-    fig,axes = plt.subplots(rows,2, figsize=(15,3*rows))
-    for i,ax,h in zip(range(len(hooks)),axes.flatten(), hooks):
-        ax.imshow(get_hist(h), origin='lower', aspect="auto", interpolation="bicubic")
-        ax.set(xlabel='iterations', ylabel="histogram", title=f"layer {i}: ln(output activations+1)")  
-    plt.tight_layout()
-    
-    fig,axes = plt.subplots(rows,2, figsize=(15,3*rows))
-    for i,ax,h in zip(range(len(hooks)),axes.flatten(), hooks):
-        ax.plot(get_min(h,pct_lower_bins))
-        ax.set_ylim(0,100)
-        ax.set(xlabel='iterations', ylabel="% near zero",  title=f"layer {i}: output activations near zero")  
-    plt.tight_layout()    
-    
-    fig,(ax0,ax1) = plt.subplots(1,2, figsize=(15,3))
-    for h in hooks:
-        ms,ss = h.stats[:2]
-        ax0.plot(ms)
-        ax0.set(xlabel='iterations', ylabel="mean activation",  title=f"mean of activations pr layers")  
-        ax0.legend(range(len(hooks)));
-        ax1.plot(ss)
-        ax1.set(xlabel='iterations', ylabel="std activation",  title=f"std of activations pr layers")  
-        ax1.legend(range(len(hooks)));
-    plt.tight_layout()     
 
 
 class AvgStatsCallback(Callback):
@@ -253,16 +213,19 @@ class Recorder(Callback):
         ax.legend(loc='upper left')
         ax.set(xlabel='iteration', ylabel='optimizer', title='optimizers')  
             
-    def plot_loss(self): 
+    def plot_loss(self, skip_start=0, skip_end=0 ): 
+        #resample validation losses so the slicin works
         fig, ax = plt.subplots()
+        s           = slice(skip_start,-skip_end) if skip_end>0 else slice(skip_start, None)
         ticksize    = int(len(self.train_losses)/self.epochs)
         tick_labels = [i for i in range(1,self.epochs+1)]
         tick_pos    = [i*ticksize for i in tick_labels]
-        l1 = ax.plot(list(range(len(self.train_losses))),self.train_losses,label="training")
-        l2 = ax.plot(tick_pos,self.valid_losses,label="validation")
-        plt.xticks(tick_pos,tick_labels)    
+        l1 = ax.plot(list(range(len(self.train_losses)))[s],self.train_losses[s],label="training")
+        l2 = ax.plot(tick_pos[s],self.valid_losses[s],label="validation")
+        plt.xticks(tick_pos[s],tick_labels[s])    
         ax.set(xlabel='epochs', ylabel="losses")  
         ax.legend()
+        
 #######################################   Learner ########################################################            
 class Event():
     def __init__(self,learner:Learner):
