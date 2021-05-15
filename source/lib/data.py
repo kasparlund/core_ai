@@ -171,6 +171,8 @@ class ImageList(FileList):
 #################### functional transforms ##############################
 def normalize(x, mean, std):
     return (x-mean[...,None,None]) / std[...,None,None]
+def denormalize(x, mean, std):
+    return ( (x * std[...,None,None]) + mean[...,None,None])
 
 def make_rgb(item): return item.convert('RGB')
 

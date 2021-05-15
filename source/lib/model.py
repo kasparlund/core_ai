@@ -112,10 +112,13 @@ class Maxout(nn.Module):
 
 def conv(ni, nf, ks=3, stride=1, bias=False, dropout_ratio=0.25):
     if dropout_ratio > 0. :
-        return [ torch.nn.Dropout(p=dropout_ratio, inplace=False),
-                 torch.nn.Conv2d(ni, nf, kernel_size=ks, stride=stride, padding=ks//2, bias=bias)]
+        #return [ torch.nn.Dropout(p=dropout_ratio, inplace=False),
+        #         torch.nn.Conv2d(ni, nf, kernel_size=ks, stride=stride, padding=ks//2, bias=bias)]
+        return [ torch.nn.Conv2d(ni, nf, kernel_size=ks, stride=stride, padding=ks//2, bias=bias),
+                 torch.nn.Dropout(p=dropout_ratio, inplace=False) ]
     else:                    
         return [torch.nn.Conv2d(ni, nf, kernel_size=ks, stride=stride, padding=ks//2, bias=bias)]
+
 
 def conv_layer(ni, nf, ks, stride, bn, zero_bn, act, dropout_ratio=0.15):
     #ni:      number of input filters
@@ -152,39 +155,45 @@ class ResBlock(nn.Module):
 
         self.convs = nn.Sequential(*layers)
         #print(f"expansion, stride, ni==nf:{expansion}, {stride}, {ni}, {nf}")
-        self.idconv = noop if ni==nf    else conv_layer(ni, nf, 1, stride=1, bn=True, zero_bn=False, act=activ_func, dropout_ratio=dpr)
         self.pool   = noop if stride==1 else nn.AvgPool2d(2, ceil_mode=True, padding=0 if ni == 2*(ni//2) else 1)
+        self.idconv = noop if ni==nf    else conv_layer(ni, nf, 1, stride=1, bn=True, zero_bn=False, act=activ_func, dropout_ratio=dpr)
 
-        self.dropout = nn.Dropout(p=dpr)
-        self.bn = nn.BatchNorm2d(nh)
+        #self.dropout =   nn.Dropout(p=dpr)
+        #self.bn     = nn.BatchNorm2d(nf)
 
-        self.bn_org = nn.BatchNorm2d(nh)
-        self.act_fn_org  = activ_func() #nn.LeakyReLU(negative_slope=1e-2) #ReLUOffset()
+        #self.bn_org = nn.BatchNorm2d(nf)
+        #self.act_fn_org  = activ_func() #nn.LeakyReLU(negative_slope=1e-2) #ReLUOffset()
 
         self.act_fn  = activ_func() #nn.LeakyReLU(negative_slope=1e-2) #ReLUOffset()
-        nn.init.constant_(self.bn.weight, .5)
-        nn.init.constant_(self.bn.bias, 0.)
-        nn.init.constant_(self.bn_org.weight, .5)
-        nn.init.constant_(self.bn_org.bias, 0.)
+        #nn.init.constant_(self.bn.weight, .5)
+        #nn.init.constant_(self.bn.bias, 0.)
+        #nn.init.constant_(self.bn_org.weight, .5)
+        #nn.init.constant_(self.bn_org.bias, 0.)
 
     def forward(self, x): 
         #return self.act_fn(self.convs(x).add_( self.idconv(self.pool(x))) )
-        #return act_fn( self.convs(x) + self.idconv(self.pool(x)) )
-        x = self.convs(x) + self.act_fn_org( self.bn_org(self.idconv(self.pool(self.dropout(x))) ))
-        return self.act_fn( self.bn(x)  )
+        #return self.act_fn( self.convs(x) + self.idconv(self.pool(x)) )
+
+        #x = self.convs(x) + self.act_fn_org( self.bn_org(self.idconv(self.pool(self.dropout(x))) ))
+        #return self.act_fn( self.bn(x) )
 
         #return self.act_fn( self.convs(x) + self.idconv(self.pool(self.dropout(x))) ) 
+
+        return self.convs(x) + self.idconv(self.pool(x))
+        #return self.act_fn( self.convs(x) + self.idconv(self.pool(x)) )
+        #return self.act_fn( self.bn(x) )
 
 
 class XResNet(nn.Sequential):
     #c_in=1 is configured for mnist
     @classmethod
     def create(cls, expansion, layers, c_in=3, c_out=1000, activ_func = partial(nn.ReLU,inplace=True)):
-        dp = 0.1
+        dp = 0.15
         #nfs, strides, dpr  = ([c_in, (c_in+1)*8],         [2],    [.0,.15]) if c_in==1 else  \
         #nfs, strides, dpr  = ([c_in, (c_in+1)*8, 32],     [1,2],  [.0,.15,.15]) if c_in==1 else  \
         #nfs, strides, dpr  = ([c_in, (c_in+1)*8, 16], [1,2,1],  [.0,.15,.15]) if c_in==1 else  \
-        nfs, strides, dpr  = ([c_in, (c_in+1)*8, 32, 32], [1,2,1], [dp,dp,dp]) if c_in==1 else  \
+        #nfs, strides, dpr  = ([c_in, (c_in+1)*8, 32, 32], [1,2,1], [dp,dp,dp]) if c_in==1 else  \
+        nfs, strides, dpr  = ([c_in, (c_in+1)*8, 32], [1,2], [dp,dp,dp]) if c_in==1 else  \
                              ([c_in, (c_in+1)*8, 32, 64], [1,2,2], [.1,dp,dp,dp])
         stem    = [conv_layer( nfs[i], nfs[i+1], ks=3, stride=strides[i], 
                                act=activ_func, bn=True, zero_bn=False, dropout_ratio=dpr[i]) for i in range(len(nfs)-1)]
@@ -192,7 +201,9 @@ class XResNet(nn.Sequential):
         #nfs, strides  = ([16//expansion,16,32,32],       [1,2,1]) if c_in==1 else  \
         #nfs, strides  = ([16//expansion,64,128],      [2,2,1]) if c_in==1 else  \
         #nfs, strides  = ([32//expansion,64,128],      [2,2,1]) if c_in==1 else  \
-        nfs, strides  = ([32//expansion,64,128],         [2,2]) if c_in==1 else  \
+        #nfs, strides  = ([32//expansion,64,128],         [2,2]) if c_in==1 else  \
+        #nfs, strides  = ([32//expansion,64,128,256],     [2,1,2]) if c_in==1 else  \
+        nfs, strides  = ([32//expansion,64,256],     [2,2]) if c_in==1 else  \
                         ([64//expansion,64,128,256,512], [1,2,2,2]) 
         if len(nfs) < len(layers)+1: layers=layers[0:len(nfs)-1]
         res_layers = [cls._make_layer(expansion, nfs[i], nfs[i+1], n_blocks=l, stride=strides[i], 
@@ -206,9 +217,13 @@ class XResNet(nn.Sequential):
             #nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             #nn.AvgPool2d(kernel_size=3, stride=2, padding=1),
             *res_layers,
-            nn.AdaptiveAvgPool2d(1), 
+            #nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            #nn.AdaptiveAvgPool2d(1), 
             Flatten(),
-
+            #nn.BatchNorm1d(n2_res),
+            nn.Linear(n2_res, c_out)
+        )
+        """
             nn.Dropout(p=dp, inplace=False),
             nn.Linear(n2_res, n2),
             nn.BatchNorm1d(n2),
@@ -217,8 +232,7 @@ class XResNet(nn.Sequential):
             nn.BatchNorm1d(n2),
             nn.Dropout(p=dp, inplace=False),
             nn.Linear(n2, c_out)
-            #nn.Dropout(p=0.05, inplace=False),
-        )
+        """
         return res
 
     @staticmethod
